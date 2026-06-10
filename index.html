@@ -192,7 +192,7 @@ canvas{width:100%;border-radius:10px;background:#0C1620;border:1px solid var(--l
       <input id="addSym" placeholder="Ajouter un ticker US (ex: AAPL)" style="text-transform:uppercase" autocapitalize="characters" autocomplete="off">
       <button class="btn sm" id="addBtn" style="flex:none">＋</button>
     </div>
-    <div class="tiny muted" style="margin-top:8px">Données gratuites Finnhub = actions US. 25 titres max (limite 60 req/min).</div>
+    <div class="tiny muted" style="margin-top:8px">Données gratuites Finnhub = actions US · jusqu'à 60 titres. Plus la liste est longue, plus chaque cours se rafraîchit lentement (cycle ≈ 70 s à 60 titres).</div>
   </div>
 
   <div class="eyebrow">Signaux</div>
@@ -321,7 +321,17 @@ const toast = m=>{ const t=$("#toast"); t.textContent=m; t.classList.add("show")
 /* ───────── état ───────── */
 let cfg = S.get("cfg", { finn:"", tw:"", anth:"", model:"claude-haiku-4-5-20251001",
                          tgOn:false, tgT:"", tgC:"", cap:1000, risk:1 });
-let watch = S.get("watch", ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AMD","NFLX","JPM","XOM","DIS","UBER","BA","PYPL"]);
+const DEFAULT_WATCH = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","LIN","JPM",
+"LLY","V","UNH","XOM","MA","COST","HD","PG","JNJ","NFLX",
+"BAC","ABBV","CRM","CVX","KO","AMD","PEP","TMO","WMT","ADBE",
+"MRK","CSCO","MCD","ORCL","INTC","IBM","QCOM","TXN","GE","CAT",
+"DIS","PFE","NKE","GS","MS","BA","UBER","PYPL","AMAT","PLTR"];
+let watch = S.get("watch", DEFAULT_WATCH.slice());
+// migration : élargit une seule fois les anciennes listes vers les 50 par défaut
+if(S.get("seed",1) < 2){
+  const set = new Set(watch); DEFAULT_WATCH.forEach(s=>set.add(s));
+  watch = Array.from(set).slice(0,60); S.set("watch",watch); S.set("seed",2);
+}
 let positions = S.get("pos", []);
 let quotes = {};            // sym -> dernier quote finnhub
 let hist = {};              // sym -> [{t,c}] échantillons de séance
@@ -349,28 +359,37 @@ async function fq(sym){
   if(!j || !j.c) throw new Error("vide");
   return j;
 }
-let pollTimer = null;
-async function pollOnce(){
-  if(!cfg.finn || !watch.length) return;
-  for(const sym of watch.slice(0,25)){
-    try{
-      const q = await fq(sym);
-      quotes[sym] = q;
-      (hist[sym] = hist[sym]||[]).push({t:Date.now(), c:q.c});
-      if(hist[sym].length>120) hist[sym].shift();
-    }catch(e){ /* on ignore ce tour */ }
-    await new Promise(r=>setTimeout(r,140));
+let pollGen = 0;
+const sleep = ms=>new Promise(r=>setTimeout(r,ms));
+async function primeSym(sym){
+  try{ const q = await fq(sym); quotes[sym]=q;
+    renderWatchUI(); renderMovers(); renderPortfolio(); renderGauge(); }catch(e){}
+}
+async function pollLoop(gen){
+  while(gen===pollGen && cfg.finn && watch.length){
+    const list = watch.slice(0,60);
+    let i = 0;
+    for(const sym of list){
+      if(gen!==pollGen) return;
+      try{
+        const q = await fq(sym);
+        quotes[sym] = q;
+        (hist[sym] = hist[sym]||[]).push({t:Date.now(), c:q.c});
+        if(hist[sym].length>200) hist[sym].shift();
+      }catch(e){ /* on ignore ce tour */ }
+      if(++i % 8 === 0){ renderMovers(); renderGauge(); renderWatchUI(); renderPortfolio(); }
+      await sleep(1150); // ≈52 req/min : reste sous la limite gratuite (60/min)
+    }
+    renderMovers(); renderGauge(); renderWatchUI(); renderPortfolio(); runSessionSignals();
+    await sleep(4000);
   }
-  renderMovers(); renderGauge(); renderWatchUI(); renderPortfolio(); runSessionSignals();
 }
 function startPolling(){
-  clearInterval(pollTimer);
+  pollGen++;
   const on = !!cfg.finn;
   $("#liveDot").classList.toggle("on", on);
   $("#liveTxt").textContent = on ? "en direct" : "hors ligne";
-  if(!on) return;
-  pollOnce();
-  pollTimer = setInterval(pollOnce, 30000);
+  if(on) pollLoop(pollGen);
 }
 
 /* ───────── jauge Fear & Greed maison ───────── */
@@ -439,9 +458,9 @@ function renderWatchUI(){
 $("#addBtn").onclick = ()=>{
   const v = $("#addSym").value.trim().toUpperCase();
   if(!v) return;
-  if(watch.length>=25) return toast("25 titres max (limite API gratuite)");
+  if(watch.length>=60) return toast("60 titres max (limite de débit de l'API gratuite)");
   if(!watch.includes(v)) { watch.push(v); S.set("watch",watch); }
-  $("#addSym").value=""; renderWatchUI(); pollOnce();
+  $("#addSym").value=""; renderWatchUI(); primeSym(v);
 };
 
 /* ───────── signaux de séance ───────── */
@@ -504,9 +523,14 @@ function atr(vals,p=14){
     trs.push(Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc)));
   } return trs.slice(-p).reduce((a,b)=>a+b,0)/p;
 }
+let swingOff = 0;
 async function refreshSwing(){
   if(!cfg.tw) return;
-  for(const sym of watch.slice(0,20)){
+  // budget gratuit Twelve Data ≈ 800 crédits/jour → 30 titres/heure en rotation sur toute la liste
+  const N = Math.min(30, watch.length);
+  const batch = Array.from({length:N},(_,i)=> watch[(swingOff+i)%watch.length]);
+  swingOff = (swingOff+N) % Math.max(watch.length,1);
+  for(const sym of batch){
     try{
       const v = await TD.series(sym);
       const cl = v.map(x=>+x.close);
@@ -700,8 +724,8 @@ $("#pAdd").onclick = ()=>{
   if(!sym||!qty||!pru) return toast("Ticker, quantité et PRU requis");
   positions.push({sym,qty,pru}); S.set("pos",positions);
   $("#pSym").value=$("#pQty").value=$("#pPru").value="";
-  renderPortfolio(); if(!watch.includes(sym)&&watch.length<25){watch.push(sym);S.set("watch",watch);renderWatchUI();}
-  pollOnce();
+  renderPortfolio(); if(!watch.includes(sym)&&watch.length<60){watch.push(sym);S.set("watch",watch);renderWatchUI();}
+  primeSym(sym);
 };
 
 /* ───────── DCA ───────── */
