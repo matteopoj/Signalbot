@@ -202,26 +202,18 @@ canvas{width:100%;border-radius:10px;background:#0C1620;border:1px solid var(--l
 
 <!-- ════════ PORTEFEUILLE ════════ -->
 <section class="view" id="v-port">
-  <div class="eyebrow">Allocation</div>
+  <div class="eyebrow">Mes positions suivies</div>
   <div class="card">
-    <div class="donutwrap">
-      <div class="donut" id="donut" style="background:conic-gradient(var(--line2) 0 100%)"></div>
-      <div class="legend" id="legend"><div class="empty tiny" style="padding:14px 0">Ajoute tes positions ci-dessous.</div></div>
-    </div>
-    <div class="kpis" id="pkpis"></div>
-    <div class="tiny muted" style="margin-top:8px" id="allocNote">Totaux, P&L et allocation en €.</div>
-  </div>
-
-  <div class="eyebrow">Positions</div>
-  <div class="card">
+    <div class="tiny muted" style="margin-bottom:12px">Déclare ici ce que tu détiens pour recevoir les <b>alertes de vente</b> (stop, prise de profit, surachat, cassure de tendance). Le ticker doit être celui de la watchlist du scanner.</div>
     <div id="plist"></div>
     <hr class="sep">
     <div class="row" style="gap:8px">
-      <input id="pSym" placeholder="Ticker" style="text-transform:uppercase;flex:1.2" autocapitalize="characters">
-      <input id="pQty" placeholder="Qté" type="number" inputmode="decimal" style="flex:1">
-      <input id="pPru" placeholder="PRU" type="number" inputmode="decimal" style="flex:1">
+      <input id="pSym" placeholder="Ticker (ex: SONY)" style="text-transform:uppercase;flex:1.3" autocapitalize="characters">
+      <input id="pQty" placeholder="Quantité" type="number" inputmode="decimal" style="flex:1">
+      <input id="pPru" placeholder="Prix d'achat" type="number" inputmode="decimal" style="flex:1">
     </div>
     <button class="btn ghost" id="pAdd" style="margin-top:10px">Ajouter la position</button>
+    <div class="tiny muted" style="margin-top:8px">Prix d'achat = ton PRU (sert de référence au stop de protection). Pas de valorisation ni P&L ici : ta vraie performance est sur ton appli courtier.</div>
   </div>
 
   <div class="eyebrow">Simulateur DCA</div>
@@ -911,63 +903,24 @@ function curOf(sym){
 }
 function renderPortfolio(){
   const L=$("#plist");
-  if(!positions.length){ L.innerHTML=`<div class="empty tiny" style="padding:10px 0">Aucune position.</div>`; }
-  else L.innerHTML = positions.map((p,i)=>{
-    const mkt = marketInUserCcy(p.sym);                 // cours live dans la devise de saisie
-    const last = mkt!=null ? mkt : (p.manual!=null? p.manual : null);
-    const src = mkt!=null ? "" : (p.manual!=null? " · manuel" : "");
-    const val=last!=null?last*p.qty:null, cost=p.pru*p.qty;
-    const pl = val!=null? val-cost : null, plp = pl!=null? pl/cost*100 : null;
-    const cls = pl==null?"muted":pl>=0?"up":"down";
-    const d = dispCur(p.sym);
+  if(!positions.length){
+    L.innerHTML=`<div class="empty tiny" style="padding:16px 0">Aucune position suivie.<br>Ajoute ce que tu détiens pour recevoir les alertes de vente.</div>`;
+    return;
+  }
+  L.innerHTML = positions.map((p,i)=>{
+    const d = curOf(p.sym);
+    const mkt = marketInUserCcy(p.sym);
+    const cours = mkt!=null ? ` · cours actuel ${fmt(mkt)} ${dispCur(p.sym)}` : "";
     return `<div class="trow">
-      <div class="grow"><div class="sym">${p.sym}</div><div class="nm mono">${fmt(p.qty,p.qty%1?2:0)} × PRU ${fmt(p.pru)} ${d}${last!=null?" · cours "+fmt(last)+(mkt!=null?"":" ✎"):""}</div></div>
-      <div class="right mono" data-mp="${i}" style="cursor:pointer"><div>${val!=null?fmt(val)+" "+d:"—"}</div>
-        <div class="small ${cls}">${pl!=null?(pl>=0?"+":"")+fmt(pl)+" "+d+" ("+(plp>=0?"+":"")+fmt(plp,1)+" %)"+src:"cours n/d · toucher pour saisir"}</div></div>
+      <div class="grow"><div class="sym">${p.sym}</div>
+        <div class="nm mono">${fmt(p.qty,p.qty%1?4:0)} actions · acheté ${fmt(p.pru)} ${eurMode?"€":d}${cours}</div></div>
       <button class="chip" data-del="${i}" style="margin:0">✕</button></div>`;
   }).join("");
   document.querySelectorAll("[data-del]").forEach(b=> b.onclick=()=>{
+    if(!confirm("Retirer "+positions[+b.dataset.del].sym+" du suivi ?")) return;
     positions.splice(+b.dataset.del,1); S.set("pos",positions); renderPortfolio(); });
-  document.querySelectorAll("[data-mp]").forEach(el=> el.onclick=()=>{
-    const i=+el.dataset.mp, p=positions[i];
-    if(marketInUserCcy(p.sym)!=null) return toast("Cours en direct actif pour "+p.sym+" — rien à saisir");
-    const v = prompt(`COURS ACTUEL de l'action ${p.sym}, en ${dispCur(p.sym)} (pas la quantité !)\nLaisser vide pour effacer le cours manuel.`, p.manual!=null?p.manual:"");
-    if(v===null) return;
-    const t = String(v).trim();
-    if(t===""){ delete p.manual; S.set("pos",positions); renderPortfolio(); return toast("Cours manuel effacé"); }
-    const n = parseFloat(t.replace(",","."));
-    if(isNaN(n)||n<=0) return toast("Valeur invalide");
-    if(p.pru>0 && Math.abs(n-p.pru)/p.pru>0.5 &&
-       !confirm(`⚠️ ${fmt(n)} ${dispCur(p.sym)} s'écarte de plus de 50% de ton PRU (${fmt(p.pru)}). C'est inhabituel pour un cours — confirmer quand même ?`)) return;
-    p.manual=n; S.set("pos",positions); renderPortfolio();
-  });
-
-  // donut + legend + kpis (tout ramené en €)
-  const rows = positions.map(p=>{
-    const mkt = marketInUserCcy(p.sym);
-    const unit = mkt!=null ? mkt : (p.manual!=null? p.manual : p.pru); // devise de saisie
-    const valSaisie = unit*p.qty;
-    return {p, val: eurMode ? valSaisie : toEUR(valSaisie, p.sym)};
-  });
-  const tot = rows.reduce((a,r)=>a+r.val,0);
-  const cost = positions.reduce((a,p)=> a + (eurMode ? p.pru*p.qty : toEUR(p.pru*p.qty, p.sym)), 0);
-  if(tot>0){
-    let acc=0; const stops=[];
-    rows.sort((a,b)=>b.val-a.val).forEach((r,i)=>{
-      const pct=r.val/tot*100; stops.push(`${PALETTE[i%PALETTE.length]} ${acc}% ${acc+pct}%`); acc+=pct;
-    });
-    $("#donut").style.background = `conic-gradient(${stops.join(",")})`;
-    $("#legend").innerHTML = rows.map((r,i)=>`<div class="trow">
-      <span class="sw" style="background:${PALETTE[i%PALETTE.length]}"></span>
-      <span class="sym grow">${r.p.sym}</span>
-      <span class="mono small">${fmt(r.val/tot*100,1)} %</span></div>`).join("");
-    const pl=tot-cost;
-    $("#pkpis").innerHTML = `
-      <div class="kpi"><div class="v mono">${fmt(tot,0)} €</div><div class="k">Valeur</div></div>
-      <div class="kpi"><div class="v mono">${fmt(cost,0)} €</div><div class="k">Investi</div></div>
-      <div class="kpi"><div class="v mono ${pl>=0?"up":"down"}">${pl>=0?"+":""}${fmt(pl,0)} €</div><div class="k">P&L latent</div></div>`;
-  } else { $("#donut").style.background=`conic-gradient(var(--line2) 0 100%)`; $("#legend").innerHTML=`<div class="empty tiny" style="padding:14px 0">Ajoute tes positions ci-dessous.</div>`; $("#pkpis").innerHTML=""; }
 }
+
 $("#pAdd").onclick = ()=>{
   const sym=$("#pSym").value.trim().toUpperCase().replace(/\s+/g,"."), qty=+$("#pQty").value, pru=+$("#pPru").value;
   if(!sym||!qty||!pru) return toast("Ticker, quantité et PRU requis");
