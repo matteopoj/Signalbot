@@ -277,6 +277,15 @@ canvas{width:100%;border-radius:10px;background:#0C1620;border:1px solid var(--l
     <button class="btn ghost" id="tTg">Tester Telegram</button>
   </div>
 
+  <div class="eyebrow">Sync portefeuille → Scanner Telegram</div>
+  <div class="card">
+    <div class="tiny muted" style="margin-bottom:10px">Publie tes positions vers le scanner GitHub pour recevoir les alertes de <b>vente</b> automatiquement (sans éditer le code). Nécessite un jeton GitHub "gist".</div>
+    <label class="f"><span>Jeton GitHub (scope: gist)</span><input id="sGh" placeholder="github_pat_… ou ghp_…" autocomplete="off"></label>
+    <label class="f"><span>ID du Gist (laisser vide pour en créer un)</span><input id="sGist" placeholder="créé automatiquement" autocomplete="off"></label>
+    <button class="btn ghost" id="syncBtn">⬆️ Publier mon portefeuille</button>
+    <div id="syncOut" class="tiny" style="margin-top:8px"></div>
+  </div>
+
   <div class="eyebrow">Gestion du risque</div>
   <div class="card">
     <div class="row" style="gap:8px">
@@ -1040,6 +1049,36 @@ function loadSettings(){
   $("#tgSw").classList.toggle("on",cfg.tgOn);
 }
 $("#tgSw").onclick = ()=> $("#tgSw").classList.toggle("on");
+
+// ── Sync portefeuille → Gist (pour le scanner Telegram) ──
+$("#sGh").value = S.get("gh","");
+$("#sGist").value = S.get("gistId","");
+$("#syncBtn").onclick = async ()=>{
+  const tok = $("#sGh").value.trim();
+  if(!tok) return toast("Renseigne ton jeton GitHub (scope gist)");
+  if(!positions.length) return toast("Aucune position à publier");
+  S.set("gh",tok);
+  const out = $("#syncOut"); out.textContent = "Publication…"; out.style.color="var(--mut)";
+  const payload = JSON.stringify({updated:new Date().toISOString(),
+    positions: positions.map(p=>({sym:p.sym, qty:p.qty, pru:p.pru}))}, null, 2);
+  const files = {"signalbot_portfolio.json":{content:payload}};
+  let gistId = $("#sGist").value.trim() || S.get("gistId","");
+  try{
+    const url = gistId? `https://api.github.com/gists/${gistId}` : "https://api.github.com/gists";
+    const r = await fetch(url, {
+      method: gistId? "PATCH":"POST",
+      headers:{ "Authorization":"Bearer "+tok, "Accept":"application/vnd.github+json" },
+      body: JSON.stringify({description:"SignalBot portfolio", public:true, files})
+    });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.message||("HTTP "+r.status));
+    gistId = j.id; S.set("gistId",gistId); $("#sGist").value=gistId;
+    const raw = j.files["signalbot_portfolio.json"].raw_url
+      .replace(/\/raw\/[0-9a-f]+\//,"/raw/"); // URL brute stable (sans révision)
+    out.style.color="var(--green)";
+    out.innerHTML = "✓ Publié ("+positions.length+" position(s)).<br>Colle cette URL dans le secret GitHub <b>PORTFOLIO_URL</b> :<br><span class=\"mono\" style=\"word-break:break-all\">"+raw+"</span>";
+  }catch(e){ out.style.color="var(--red)"; out.textContent="❌ "+e.message; }
+};
 $("#saveBtn").onclick = ()=>{
   cfg = { finn:$("#sFinn").value.trim(), tw:$("#sTw").value.trim(), anth:$("#sAnth").value.trim(), gem:$("#sGem").value.trim(),
           model:$("#sModel").value, tgOn:$("#tgSw").classList.contains("on"),
