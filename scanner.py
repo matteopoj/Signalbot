@@ -28,19 +28,54 @@ POSITIONS = {
 
 # ── 3) WATCHLIST (opportunités d'achat) ─────────────────────
 WATCHLIST = [
-    # 🇺🇸 US
-    "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","JPM","LLY",
-    "V","XOM","MA","COST","NFLX","BAC","AMD","KO","WMT","MRK",
-    "ORCL","QCOM","CAT","DIS","GS","BA","UBER","PLTR",
-    # 🇪🇺 Europe
+    # 🇺🇸 US (60)
+    "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO",
+    "BRK-B","JPM","LLY","V","UNH","XOM","MA","COST",
+    "HD","PG","JNJ","NFLX","BAC","ABBV","CRM","CVX",
+    "KO","AMD","PEP","TMO","WMT","ADBE","MRK","CSCO",
+    "MCD","ORCL","INTC","IBM","QCOM","TXN","GE","CAT",
+    "DIS","PFE","NKE","GS","MS","BA","UBER","PYPL",
+    "AMAT","PLTR","NOW","INTU","SPGI","BKNG","C","WFC",
+    "RTX","HON","LOW","UPS",
+    # 🇪🇺 Europe (45)
     "MC.PA","OR.PA","TTE.PA","SAN.PA","AIR.PA","RMS.PA","SU.PA","BNP.PA",
-    "AI.PA","SAF.PA","CAP.PA","DG.PA","SAP.DE","BMW.DE","SIE.DE","ASML.AS",
-    # 🌏 Asie
-    "7203.T","6758.T","7974.T","9984.T","8035.T",
-    "0700.HK","9988.HK","1810.HK","005930.KS","000660.KS",
+    "AI.PA","SAF.PA","CAP.PA","DG.PA","KER.PA","EL.PA","CS.PA","BN.PA",
+    "SAP.DE","SIE.DE","BMW.DE","ALV.DE","DTE.DE","BAS.DE","MBG.DE","VOW3.DE",
+    "ASML.AS","PRX.AS","INGA.AS","AD.AS","NESN.SW","ROG.SW","NOVN.SW","UBSG.SW",
+    "SHEL.L","AZN.L","HSBA.L","ULVR.L","BP.L","RIO.L","GSK.L","ISP.MI",
+    "ENI.MI","RACE.MI","IBE.MC","SAN.MC","ITX.MC",
+    # 🌏 Asie (36)
+    "7203.T","6758.T","7974.T","9984.T","8035.T","6861.T","9433.T","8306.T",
+    "6098.T","4063.T","9432.T","7267.T","0700.HK","9988.HK","3690.HK","1810.HK",
+    "0941.HK","1299.HK","0005.HK","9618.HK","2318.HK","1024.HK","0388.HK","2020.HK",
+    "005930.KS","000660.KS","005380.KS","035420.KS","373220.KS","051910.KS","TSM","BABA",
+    "TM","SONY","HDB","INFY",
 ]
 
 COOLDOWN_H = {"opp": 40, "stop": 20, "trail": 20, "drop": 10, "tp": 20, "br": 20}
+
+# Portefeuille synchronisé depuis la PWA (optionnel) : URL brute d'un Gist public.
+# Laisser vide pour n'utiliser que le bloc POSITIONS ci-dessus.
+GIST_PORTFOLIO_URL = os.environ.get("PORTFOLIO_URL", "")
+
+def charge_positions_distantes():
+    """Fusionne POSITIONS (code) avec le portefeuille publié par la PWA."""
+    merged = dict(POSITIONS)
+    if not GIST_PORTFOLIO_URL:
+        return merged
+    try:
+        r = requests.get(GIST_PORTFOLIO_URL, timeout=10)
+        if r.ok:
+            data = r.json()
+            for p in data.get("positions", []):
+                sym = str(p.get("sym","")).upper().replace(" ", ".")
+                qty = float(p.get("qty",0)); pru = float(p.get("pru",0))
+                if sym and qty>0 and pru>0:
+                    merged[sym] = {"qty": qty, "pru": pru}
+            print(f"Portefeuille PWA : {len(data.get('positions', []))} position(s) chargée(s)")
+    except Exception as e:
+        print("Portefeuille distant indisponible:", e)
+    return merged
 
 # ── Telegram ────────────────────────────────────────────────
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -180,7 +215,8 @@ def main():
     if not TOKEN or not CHAT:
         print("Secrets TELEGRAM_TOKEN / CHAT_ID manquants"); return
     st = load_state()
-    univers = sorted(set(WATCHLIST) | set(POSITIONS))
+    positions = charge_positions_distantes()
+    univers = sorted(set(WATCHLIST) | set(positions))
     print(f"Scan de {len(univers)} titres — {datetime.now():%d/%m %H:%M}")
 
     data = yf.download(univers, period="1y", interval="1d", group_by="ticker",
@@ -192,9 +228,9 @@ def main():
             k = compute(df)
             if not k: continue
             scanned += 1
-            if sym in POSITIONS:
-                signaux += protege_position(sym, POSITIONS[sym], k, st)
-            if sym in WATCHLIST and sym not in POSITIONS:
+            if sym in positions:
+                signaux += protege_position(sym, positions[sym], k, st)
+            if sym in WATCHLIST and sym not in positions:
                 signaux += chasse_opportunite(sym, k, st)
         except Exception as e:
             print(sym, "→", e)
