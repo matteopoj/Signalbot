@@ -1,0 +1,30 @@
+name: SignalBot Scanner
+
+on:
+  schedule:
+    - cron: "*/30 * * * 1-5"   # toutes les 30 min, du lundi au vendredi (UTC)
+  workflow_dispatch:            # bouton "Run workflow" pour tester à la main
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # mémoire entre deux passages (cooldowns anti-doublons, plus-hauts)
+      - uses: actions/cache@v4
+        with:
+          path: state.json
+          key: signalbot-state-${{ github.run_id }}
+          restore-keys: signalbot-state-
+
+      - run: pip install --quiet yfinance requests
+
+      - run: python scanner.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
