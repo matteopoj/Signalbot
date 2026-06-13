@@ -209,7 +209,7 @@ canvas{width:100%;border-radius:10px;background:#0C1620;border:1px solid var(--l
       <div class="legend" id="legend"><div class="empty tiny" style="padding:14px 0">Ajoute tes positions ci-dessous.</div></div>
     </div>
     <div class="kpis" id="pkpis"></div>
-    <div class="tiny muted" style="margin-top:8px">Totaux et allocation convertis en € au taux BCE du jour (positions affichées en devise d'origine).</div>
+    <div class="tiny muted" style="margin-top:8px" id="allocNote">Totaux, P&L et allocation en €.</div>
   </div>
 
   <div class="eyebrow">Positions</div>
@@ -275,6 +275,12 @@ canvas{width:100%;border-radius:10px;background:#0C1620;border:1px solid var(--l
     <label class="f"><span>Token du bot</span><input id="sTgT" placeholder="8847608931:AAH…" autocomplete="off"></label>
     <label class="f"><span>Chat ID</span><input id="sTgC" placeholder="8134215625" autocomplete="off"></label>
     <button class="btn ghost" id="tTg">Tester Telegram</button>
+  </div>
+
+  <div class="eyebrow">Mon courtier</div>
+  <div class="card">
+    <div class="row"><div class="grow small">Je saisis tout en <b>euros</b> (Trade Republic, Boursobank…)</div><div class="switch on" id="eurSw"><i></i></div></div>
+    <div class="tiny muted" style="margin-top:8px">Activé : tes PRU sont en €, les cours de marché sont convertis en € pour comparer, et tout s'affiche en € — comme dans ton appli courtier. Désactive seulement si tu saisis chaque action dans sa devise locale.</div>
   </div>
 
   <div class="eyebrow">Sync portefeuille → Scanner Telegram</div>
@@ -861,6 +867,7 @@ $("#briefBtn").onclick = async ()=>{
 /* ───────── portefeuille ───────── */
 /* ── Taux de change BCE (frankfurter.app — gratuit, sans clé) ── */
 let fx = S.get("fx", null);
+let eurMode = S.get("eurMode", true);   // saisie & affichage tout en euros (style courtier FR)
 const FX_FALLBACK = {USD:1.08, JPY:170, HKD:8.4, KRW:1550, GBP:0.84};
 async function refreshFX(){
   try{
@@ -885,6 +892,15 @@ function toEUR(amount, sym){
   return amount/(rates[c]||FX_FALLBACK[c]||1);
 }
 
+/* Cours de marché exprimé dans la devise où l'utilisateur saisit (€ si eurMode). */
+function marketInUserCcy(sym){
+  const q = quotes[sym];
+  if(!q) return null;
+  return eurMode ? toEUR(q.c, sym) : q.c;   // q.c est en devise locale du marché
+}
+/* Devise d'affichage d'une position. */
+function dispCur(sym){ return eurMode ? "€" : curOf(sym); }
+
 function curOf(sym){
   if(/\.(PA|DE|AS|MI|MC|BR)$/.test(sym)) return "€";
   if(sym.endsWith(".T")) return "¥";
@@ -897,42 +913,44 @@ function renderPortfolio(){
   const L=$("#plist");
   if(!positions.length){ L.innerHTML=`<div class="empty tiny" style="padding:10px 0">Aucune position.</div>`; }
   else L.innerHTML = positions.map((p,i)=>{
-    const q=quotes[p.sym];
-    const last = q? q.c : (p.manual!=null? p.manual : null);
-    const src = q? "" : (p.manual!=null? " · manuel" : "");
+    const mkt = marketInUserCcy(p.sym);                 // cours live dans la devise de saisie
+    const last = mkt!=null ? mkt : (p.manual!=null? p.manual : null);
+    const src = mkt!=null ? "" : (p.manual!=null? " · manuel" : "");
     const val=last!=null?last*p.qty:null, cost=p.pru*p.qty;
     const pl = val!=null? val-cost : null, plp = pl!=null? pl/cost*100 : null;
     const cls = pl==null?"muted":pl>=0?"up":"down";
-    const d = curOf(p.sym);
+    const d = dispCur(p.sym);
     return `<div class="trow">
-      <div class="grow"><div class="sym">${p.sym}</div><div class="nm mono">${fmt(p.qty,p.qty%1?2:0)} × PRU ${fmt(p.pru)}${last!=null?" · cours "+fmt(last)+(q?"":" ✎"):""}</div></div>
+      <div class="grow"><div class="sym">${p.sym}</div><div class="nm mono">${fmt(p.qty,p.qty%1?2:0)} × PRU ${fmt(p.pru)} ${d}${last!=null?" · cours "+fmt(last)+(mkt!=null?"":" ✎"):""}</div></div>
       <div class="right mono" data-mp="${i}" style="cursor:pointer"><div>${val!=null?fmt(val)+" "+d:"—"}</div>
-        <div class="small ${cls}">${pl!=null?(pl>=0?"+":"")+fmt(pl)+" ("+(plp>=0?"+":"")+fmt(plp,1)+" %)"+(d!=="€"?" · ≈ "+(pl>=0?"+":"")+fmt(toEUR(pl,p.sym),0)+" €":"")+src:"cours n/d · toucher pour saisir"}</div></div>
+        <div class="small ${cls}">${pl!=null?(pl>=0?"+":"")+fmt(pl)+" "+d+" ("+(plp>=0?"+":"")+fmt(plp,1)+" %)"+src:"cours n/d · toucher pour saisir"}</div></div>
       <button class="chip" data-del="${i}" style="margin:0">✕</button></div>`;
   }).join("");
   document.querySelectorAll("[data-del]").forEach(b=> b.onclick=()=>{
     positions.splice(+b.dataset.del,1); S.set("pos",positions); renderPortfolio(); });
   document.querySelectorAll("[data-mp]").forEach(el=> el.onclick=()=>{
     const i=+el.dataset.mp, p=positions[i];
-    if(quotes[p.sym]) return toast("Cours en direct actif pour "+p.sym+" — rien à saisir");
-    const v = prompt(`COURS ACTUEL de l'action ${p.sym}, en ${curOf(p.sym)} (pas la quantité !)\nLaisser vide pour effacer le cours manuel.`, p.manual!=null?p.manual:"");
+    if(marketInUserCcy(p.sym)!=null) return toast("Cours en direct actif pour "+p.sym+" — rien à saisir");
+    const v = prompt(`COURS ACTUEL de l'action ${p.sym}, en ${dispCur(p.sym)} (pas la quantité !)\nLaisser vide pour effacer le cours manuel.`, p.manual!=null?p.manual:"");
     if(v===null) return;
     const t = String(v).trim();
     if(t===""){ delete p.manual; S.set("pos",positions); renderPortfolio(); return toast("Cours manuel effacé"); }
     const n = parseFloat(t.replace(",","."));
     if(isNaN(n)||n<=0) return toast("Valeur invalide");
     if(p.pru>0 && Math.abs(n-p.pru)/p.pru>0.5 &&
-       !confirm(`⚠️ ${fmt(n)} ${curOf(p.sym)} s'écarte de plus de 50% de ton PRU (${fmt(p.pru)}). C'est inhabituel pour un cours — confirmer quand même ?`)) return;
+       !confirm(`⚠️ ${fmt(n)} ${dispCur(p.sym)} s'écarte de plus de 50% de ton PRU (${fmt(p.pru)}). C'est inhabituel pour un cours — confirmer quand même ?`)) return;
     p.manual=n; S.set("pos",positions); renderPortfolio();
   });
 
-  // donut + legend + kpis
+  // donut + legend + kpis (tout ramené en €)
   const rows = positions.map(p=>{
-    const natif = (quotes[p.sym]?quotes[p.sym].c:(p.manual!=null?p.manual:p.pru))*p.qty;
-    return {p, val: toEUR(natif, p.sym)};            // tout est comparé et sommé en €
+    const mkt = marketInUserCcy(p.sym);
+    const unit = mkt!=null ? mkt : (p.manual!=null? p.manual : p.pru); // devise de saisie
+    const valSaisie = unit*p.qty;
+    return {p, val: eurMode ? valSaisie : toEUR(valSaisie, p.sym)};
   });
   const tot = rows.reduce((a,r)=>a+r.val,0);
-  const cost = positions.reduce((a,p)=>a+toEUR(p.pru*p.qty, p.sym),0);
+  const cost = positions.reduce((a,p)=> a + (eurMode ? p.pru*p.qty : toEUR(p.pru*p.qty, p.sym)), 0);
   if(tot>0){
     let acc=0; const stops=[];
     rows.sort((a,b)=>b.val-a.val).forEach((r,i)=>{
@@ -1047,8 +1065,18 @@ function loadSettings(){
   $("#sModel").value=cfg.model; $("#sTgT").value=cfg.tgT; $("#sTgC").value=cfg.tgC;
   $("#sCap").value=cfg.cap; $("#sRisk").value=cfg.risk; $("#sStop").value=cfg.stop;
   $("#tgSw").classList.toggle("on",cfg.tgOn);
+  $("#eurSw").classList.toggle("on", eurMode);
 }
 $("#tgSw").onclick = ()=> $("#tgSw").classList.toggle("on");
+$("#eurSw").onclick = ()=>{
+  $("#eurSw").classList.toggle("on");
+  eurMode = $("#eurSw").classList.contains("on");
+  S.set("eurMode", eurMode);
+  const note = document.getElementById("allocNote");
+  if(note) note.textContent = eurMode ? "Totaux, P&L et allocation en €."
+    : "Positions en devise locale du marché ; totaux convertis en € au taux BCE.";
+  renderPortfolio();
+};
 
 // ── Sync portefeuille → Gist (pour le scanner Telegram) ──
 $("#sGh").value = S.get("gh","");
